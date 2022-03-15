@@ -100,7 +100,7 @@ class EndlessService : Service() {
             }
 
         // we're starting a loop in a coroutine
-        GlobalScope.launch(Dispatchers.IO) {
+        GlobalScope.launch {
             while (isServiceStarted) {
                 detection()
                 delay(detectionIntervalSec*1000L)
@@ -131,7 +131,7 @@ class EndlessService : Service() {
         val channel = Channel<FloatArray>(0)
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
-                channel.offer(event.values)
+                channel.offer(event.values.copyOf())
             }
             override fun onAccuracyChanged(p0: Sensor?, p1: Int) {
             }
@@ -144,6 +144,7 @@ class EndlessService : Service() {
         )
         val firstSample = channel.receive()
         if (gravityRef == null) {
+            logStatus(printVect(firstSample))
             if (!isEngineOn(channel)) gravityRef = firstSample
         }
         else {
@@ -165,8 +166,9 @@ class EndlessService : Service() {
 
     private suspend fun isEngineOn(channel: Channel<FloatArray>): Boolean {
         val samples = LinkedList<FloatArray>().also {
-            while (it.size < samplingDurationSec*samplingFrequencyHz)
+            while (it.size < samplingDurationSec*samplingFrequencyHz) {
                 it.add(channel.receive())
+            }
         }
         return false
     }
@@ -199,6 +201,7 @@ class EndlessService : Service() {
         .append(",")
         .append(String.format("%.2f", v[2]))
         .append("]")
+        .toString()
 
     private fun createNotification(): Notification {
         val notificationChannelId = "ENDLESS SERVICE CHANNEL"
