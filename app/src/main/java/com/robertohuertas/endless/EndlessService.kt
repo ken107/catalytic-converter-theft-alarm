@@ -4,6 +4,10 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -11,17 +15,26 @@ import android.os.SystemClock
 import android.widget.Toast
 import com.github.kittinunf.fuel.Fuel
 import com.github.kittinunf.fuel.core.extensions.jsonBody
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import java.util.*
+import kotlin.math.acos
+import kotlin.math.sqrt
+import kotlin.math.withSign
 
 
 class EndlessService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var isServiceStarted = false
+    private val detectionIntervalSec = 10
+    private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
+    private val sensor by lazy { sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) }
+    private val samplingFrequencyHz = 50
+    private val samplingDurationSec = 1
+    private var gravityRef: FloatArray? = null
+    private val tiltAngleThreshold = Math.toRadians(5.0).toFloat()
+    private val vibrationNoiseThreshold = .1f
 
     override fun onBind(intent: Intent): IBinder? {
         log("Some component want to bind with the service")
@@ -89,10 +102,8 @@ class EndlessService : Service() {
         // we're starting a loop in a coroutine
         GlobalScope.launch(Dispatchers.IO) {
             while (isServiceStarted) {
-                launch(Dispatchers.IO) {
-                    pingFakeServer()
-                }
-                delay(1 * 60 * 1000)
+                detection()
+                delay(detectionIntervalSec*1000L)
             }
             log("End of the loop for the service")
         }
@@ -116,28 +127,78 @@ class EndlessService : Service() {
         setServiceState(this, ServiceState.STOPPED)
     }
 
-    private fun pingFakeServer() {
-        val json =
-            """
-                {
-                    "method": "setAlarm"
-                }
-            """
-        try {
-            Fuel.post("https://jsonplaceholder.typicode.com/posts")
-                .jsonBody(json)
-                .response { _, _, result ->
-                    val (bytes, error) = result
-                    if (bytes != null) {
-                        log("[response bytes] ${String(bytes)}")
-                    } else {
-                        log("[response error] ${error?.message}")
-                    }
-                }
-        } catch (e: Exception) {
-            log("Error making the request: ${e.message}")
+    private suspend fun detection() {
+        val channel = Channel<FloatArray>(0)
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                channel.offer(event.values)
+            }
+            override fun onAccuracyChanged(p0: Sensor?, p1: Int) {
+            }
+        }
+        sensorManager.registerListener(
+            listener,
+            sensor,
+            1000*1000/samplingFrequencyHz,
+            100*1000
+        )
+        val firstSample = channel.receive()
+        if (gravityRef == null) {
+            if (!isEngineOn(channel)) gravityRef = firstSample
+        }
+        else {
+            val tiltAngle = angleBetweenVectors(gravityRef!!, firstSample)
+            logStatus(StringBuilder()
+                .append(printVect(gravityRef!!))
+                .append(" ")
+                .append(printVect(firstSample))
+                .append(" ")
+                .append(String.format("%.3f", Math.toDegrees(tiltAngle.toDouble())))
+                .toString())
+            if (tiltAngle > tiltAngleThreshold) {
+                if (!isEngineOn(channel)) raiseAlarm()
+                gravityRef = null
+            }
+        }
+        sensorManager.unregisterListener(listener)
+    }
+
+    private suspend fun isEngineOn(channel: Channel<FloatArray>): Boolean {
+        val samples = LinkedList<FloatArray>().also {
+            while (it.size < samplingDurationSec*samplingFrequencyHz)
+                it.add(channel.receive())
+        }
+        return false
+    }
+
+    private fun angleBetweenVectors(u: FloatArray, v: FloatArray): Float {
+        val dotProd = u[0]*v[0] + u[1]*v[1] + u[2]*v[2]
+        val uMagSq = u[0]*u[0] + u[1]*u[1] + u[2]*u[2]
+        val vMagSq = v[0]*v[0] + v[1]*v[1] + v[2]*v[2]
+        val cosThetaSq = dotProd*dotProd / (uMagSq*vMagSq)
+        val cosTheta = sqrt(cosThetaSq).withSign(dotProd)
+        return acos(cosTheta)
+    }
+
+    private fun raiseAlarm() {
+        logStatus("THEFT DETECTED")
+    }
+
+    private fun logStatus(message: String) {
+        Intent("com.robertohuertas.endless.LogStatus").let {
+            it.putExtra("message", message)
+            sendBroadcast(it)
         }
     }
+
+    private fun printVect(v: FloatArray) = StringBuilder()
+        .append("[")
+        .append(String.format("%.2f", v[0]))
+        .append(",")
+        .append(String.format("%.2f", v[1]))
+        .append(",")
+        .append(String.format("%.2f", v[2]))
+        .append("]")
 
     private fun createNotification(): Notification {
         val notificationChannelId = "ENDLESS SERVICE CHANNEL"
