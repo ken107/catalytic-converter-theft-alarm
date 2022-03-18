@@ -8,6 +8,14 @@ enum class ServiceState {
     STOPPED,
 }
 
+data class ServiceConfig (
+    val detectionIntervalSec: Int,
+    val tiltAngleThreshold: Float,
+    val samplingDurationMs: Int,
+    val engineNoiseThreshold: Float,
+    val notificationServerIp: String
+)
+
 private const val name = "SPYSERVICE_KEY"
 private const val key = "SPYSERVICE_STATE"
 
@@ -23,6 +31,39 @@ fun getServiceState(context: Context): ServiceState {
     val sharedPrefs = getPreferences(context)
     val value = sharedPrefs.getString(key, ServiceState.STOPPED.name)
     return ServiceState.valueOf(value)
+}
+
+fun setServiceConfig(context: Context, config: ServiceConfig) {
+    val sharedPrefs = getPreferences(context)
+    sharedPrefs.edit().let {
+        it.putInt("detectionIntervalSec", config.detectionIntervalSec)
+        it.putFloat("tiltAngleThreshold", config.tiltAngleThreshold)
+        it.putInt("samplingDurationMs", config.samplingDurationMs)
+        it.putFloat("engineNoiseThreshold", config.engineNoiseThreshold)
+        it.putString("notificationServerIp", config.notificationServerIp)
+        it.apply()
+    }
+}
+
+fun getServiceConfig(context: Context): ServiceConfig? {
+    val sharedPrefs = getPreferences(context)
+    return sharedPrefs.let {
+        if (it.contains("detectionIntervalSec") &&
+            it.contains("tiltAngleThreshold") &&
+            it.contains("samplingDurationMs") &&
+            it.contains("engineNoiseThreshold") &&
+            it.contains("notificationServerIp")) {
+            ServiceConfig(
+                it.getInt("detectionIntervalSec", 0),
+                it.getFloat("tiltAngleThreshold", 0f),
+                it.getInt("samplingDurationMs", 0),
+                it.getFloat("engineNoiseThreshold", 0f),
+                it.getString("notificationServerIp", "")
+            )
+        } else {
+            null
+        }
+    }
 }
 
 private fun getPreferences(context: Context): SharedPreferences {

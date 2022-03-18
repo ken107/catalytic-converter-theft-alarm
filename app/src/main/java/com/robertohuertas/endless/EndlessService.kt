@@ -4,19 +4,13 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import android.widget.Toast
-import com.github.kittinunf.fuel.Fuel
-import com.github.kittinunf.fuel.core.extensions.jsonBody
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import java.util.*
 import kotlin.math.acos
 import kotlin.math.sqrt
@@ -27,14 +21,8 @@ class EndlessService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var isServiceStarted = false
-    private val detectionIntervalSec = 10
     private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
-    private val sensor by lazy { sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) }
-    private val samplingFrequencyHz = 50
-    private val samplingDurationSec = 1
     private var gravityRef: FloatArray? = null
-    private val tiltAngleThreshold = Math.toRadians(5.0).toFloat()
-    private val vibrationNoiseThreshold = .1f
 
     override fun onBind(intent: Intent): IBinder? {
         log("Some component want to bind with the service")
@@ -86,10 +74,22 @@ class EndlessService : Service() {
     
     private fun startService() {
         if (isServiceStarted) return
+        val config = getServiceConfig(this)
+        if (config == null) {
+            logStatus("Error: Missing service config")
+            return
+        }
         log("Starting the foreground service task")
         Toast.makeText(this, "Service starting its task", Toast.LENGTH_SHORT).show()
         isServiceStarted = true
         setServiceState(this, ServiceState.STARTED)
+        logStatus(String.format("Service started (%d, %.3f, %d, %.3f, %s)",
+            config.detectionIntervalSec,
+            config.tiltAngleThreshold,
+            config.samplingDurationMs,
+            config.engineNoiseThreshold,
+            config.notificationServerIp
+        ))
 
         // we need this lock so our service gets not affected by Doze Mode
         wakeLock =
@@ -102,8 +102,8 @@ class EndlessService : Service() {
         // we're starting a loop in a coroutine
         GlobalScope.launch {
             while (isServiceStarted) {
-                detection()
-                delay(detectionIntervalSec*1000L)
+                detection(config)
+                delay(config.detectionIntervalSec*1000L)
             }
             log("End of the loop for the service")
         }
@@ -125,52 +125,43 @@ class EndlessService : Service() {
         }
         isServiceStarted = false
         setServiceState(this, ServiceState.STOPPED)
+        logStatus("Service stopped")
     }
 
-    private suspend fun detection() {
-        val channel = Channel<FloatArray>(0)
-        val listener = object : SensorEventListener {
-            override fun onSensorChanged(event: SensorEvent) {
-                channel.offer(event.values.copyOf())
+    private suspend fun detection(config: ServiceConfig) {
+        val channel = getAccelerometer(sensorManager)
+        try {
+            val firstSample = channel.receive()
+            if (gravityRef == null) {
+                logStatus(String.format("ref=%s",
+                    printVect(firstSample)
+                ))
+                val samples = collectSamples(channel, config.samplingDurationMs)
+                if (!isEngineOn(samples, config)) gravityRef = firstSample
             }
-            override fun onAccuracyChanged(p0: Sensor?, p1: Int) {
-            }
-        }
-        sensorManager.registerListener(
-            listener,
-            sensor,
-            1000*1000/samplingFrequencyHz,
-            100*1000
-        )
-        val firstSample = channel.receive()
-        if (gravityRef == null) {
-            logStatus(printVect(firstSample))
-            if (!isEngineOn(channel)) gravityRef = firstSample
-        }
-        else {
-            val tiltAngle = angleBetweenVectors(gravityRef!!, firstSample)
-            logStatus(StringBuilder()
-                .append(printVect(gravityRef!!))
-                .append(" ")
-                .append(printVect(firstSample))
-                .append(" ")
-                .append(String.format("%.3f", Math.toDegrees(tiltAngle.toDouble())))
-                .toString())
-            if (tiltAngle > tiltAngleThreshold) {
-                if (!isEngineOn(channel)) raiseAlarm()
-                gravityRef = null
+            else {
+                val tiltAngle = angleBetweenVectors(gravityRef!!, firstSample)
+                logStatus(String.format("u=%s v=%s angle=%.3f",
+                    printVect(gravityRef!!),
+                    printVect(firstSample),
+                    Math.toDegrees(tiltAngle.toDouble())
+                ))
+                if (tiltAngle >= config.tiltAngleThreshold) {
+                    val samples = collectSamples(channel, config.samplingDurationMs)
+                    if (!isEngineOn(samples, config)) raiseAlarm()
+                    gravityRef = null
+                }
             }
         }
-        sensorManager.unregisterListener(listener)
+        finally {
+            channel.close()
+        }
     }
 
-    private suspend fun isEngineOn(channel: Channel<FloatArray>): Boolean {
-        val samples = LinkedList<FloatArray>().also {
-            while (it.size < samplingDurationSec*samplingFrequencyHz) {
-                it.add(channel.receive())
-            }
-        }
-        return false
+    private fun isEngineOn(samples: LinkedList<FloatArray>, config: ServiceConfig): Boolean {
+        val peakDif = calcPeakDif(samples) ?: 0f
+        logStatus(String.format("noiseLevel=%.3f", peakDif))
+        return peakDif >= config.engineNoiseThreshold
     }
 
     private fun angleBetweenVectors(u: FloatArray, v: FloatArray): Float {
@@ -183,7 +174,7 @@ class EndlessService : Service() {
     }
 
     private fun raiseAlarm() {
-        logStatus("THEFT DETECTED")
+        Toast.makeText(this, "THEFT DETECTED", Toast.LENGTH_SHORT).show()
     }
 
     private fun logStatus(message: String) {
@@ -193,15 +184,7 @@ class EndlessService : Service() {
         }
     }
 
-    private fun printVect(v: FloatArray) = StringBuilder()
-        .append("[")
-        .append(String.format("%.2f", v[0]))
-        .append(",")
-        .append(String.format("%.2f", v[1]))
-        .append(",")
-        .append(String.format("%.2f", v[2]))
-        .append("]")
-        .toString()
+    private fun printVect(v: FloatArray) = String.format("[%.2f,%.2f,%.2f]", v[0], v[1], v[2])
 
     private fun createNotification(): Notification {
         val notificationChannelId = "ENDLESS SERVICE CHANNEL"
