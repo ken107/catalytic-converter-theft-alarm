@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">endless-service</string>
-    <string name="sampling_duration_ms">Sampling Duration (ms)</string>
-    <string name="engine_noise_threshold">Engine Noise Threshold</string>
+    <string name="detection_interval_sec">Detection Interval (seconds)</string>
+    <string name="tilt_angle_threshold">Tilt Angle Threshold (degrees)</string>
     <string name="notification_server_ip">Notification Server IP</string>
 </resources>

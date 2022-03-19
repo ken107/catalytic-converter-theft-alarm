@@ -3,15 +3,14 @@ package com.robertohuertas.endless
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.hardware.SensorManager
-import android.os.Build
-import android.os.IBinder
-import android.os.PowerManager
-import android.os.SystemClock
+import android.os.*
 import android.widget.Toast
 import kotlinx.coroutines.*
 import java.util.*
+import kotlin.math.PI
 import kotlin.math.acos
 import kotlin.math.sqrt
 import kotlin.math.withSign
@@ -22,6 +21,7 @@ class EndlessService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var isServiceStarted = false
     private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
+    private val batteryManager by lazy { getSystemService(Context.BATTERY_SERVICE) as BatteryManager }
     private var gravityRef: FloatArray? = null
 
     override fun onBind(intent: Intent): IBinder? {
@@ -83,11 +83,9 @@ class EndlessService : Service() {
         Toast.makeText(this, "Service starting its task", Toast.LENGTH_SHORT).show()
         isServiceStarted = true
         setServiceState(this, ServiceState.STARTED)
-        logStatus(String.format("Service started (%d, %.3f, %d, %.3f, %s)",
+        logStatus(String.format("Service started (%d, %.1f, %s)",
             config.detectionIntervalSec,
             config.tiltAngleThreshold,
-            config.samplingDurationMs,
-            config.engineNoiseThreshold,
             config.notificationServerIp
         ))
 
@@ -129,39 +127,37 @@ class EndlessService : Service() {
     }
 
     private suspend fun detection(config: ServiceConfig) {
-        val channel = getAccelerometer(sensorManager)
-        try {
-            val firstSample = channel.receive()
+            val firstSample = readAccelerometer(sensorManager)
             if (gravityRef == null) {
-                logStatus(String.format("ref=%s",
+                logStatus(String.format("u=%s",
                     printVect(firstSample)
                 ))
-                val samples = collectSamples(channel, config.samplingDurationMs)
-                if (!isEngineOn(samples, config)) gravityRef = firstSample
+                if (!isEngineOn()) gravityRef = firstSample
+                else logStatus("Engine running")
             }
             else {
                 val tiltAngle = angleBetweenVectors(gravityRef!!, firstSample)
-                logStatus(String.format("u=%s v=%s angle=%.3f",
+                logStatus(String.format("u=%s v=%s angle=%.1f",
                     printVect(gravityRef!!),
                     printVect(firstSample),
-                    Math.toDegrees(tiltAngle.toDouble())
+                    tiltAngle
                 ))
                 if (tiltAngle >= config.tiltAngleThreshold) {
-                    val samples = collectSamples(channel, config.samplingDurationMs)
-                    if (!isEngineOn(samples, config)) raiseAlarm()
+                    if (!isEngineOn()) raiseAlarm()
+                    else logStatus("Engine running")
                     gravityRef = null
                 }
             }
-        }
-        finally {
-            channel.close()
-        }
     }
 
-    private fun isEngineOn(samples: LinkedList<FloatArray>, config: ServiceConfig): Boolean {
-        val peakDif = calcPeakDif(samples) ?: 0f
-        logStatus(String.format("noiseLevel=%.3f", peakDif))
-        return peakDif >= config.engineNoiseThreshold
+    private fun isEngineOn(): Boolean {
+        val batteryStatus: Intent? = registerReceiver(
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        )
+        val status: Int = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        return (status == BatteryManager.BATTERY_STATUS_CHARGING
+                || status == BatteryManager.BATTERY_STATUS_FULL)
     }
 
     private fun angleBetweenVectors(u: FloatArray, v: FloatArray): Float {
@@ -170,11 +166,11 @@ class EndlessService : Service() {
         val vMagSq = v[0]*v[0] + v[1]*v[1] + v[2]*v[2]
         val cosThetaSq = dotProd*dotProd / (uMagSq*vMagSq)
         val cosTheta = sqrt(cosThetaSq).withSign(dotProd)
-        return acos(cosTheta)
+        return acos(cosTheta) * 180f / PI.toFloat()
     }
 
     private fun raiseAlarm() {
-        Toast.makeText(this, "THEFT DETECTED", Toast.LENGTH_SHORT).show()
+        logStatus("THEFT DETECTED")
     }
 
     private fun logStatus(message: String) {

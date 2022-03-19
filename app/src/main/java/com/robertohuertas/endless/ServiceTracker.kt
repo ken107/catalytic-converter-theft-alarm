@@ -11,8 +11,6 @@ enum class ServiceState {
 data class ServiceConfig (
     val detectionIntervalSec: Int,
     val tiltAngleThreshold: Float,
-    val samplingDurationMs: Int,
-    val engineNoiseThreshold: Float,
     val notificationServerIp: String
 )
 
@@ -38,8 +36,6 @@ fun setServiceConfig(context: Context, config: ServiceConfig) {
     sharedPrefs.edit().let {
         it.putInt("detectionIntervalSec", config.detectionIntervalSec)
         it.putFloat("tiltAngleThreshold", config.tiltAngleThreshold)
-        it.putInt("samplingDurationMs", config.samplingDurationMs)
-        it.putFloat("engineNoiseThreshold", config.engineNoiseThreshold)
         it.putString("notificationServerIp", config.notificationServerIp)
         it.apply()
     }
@@ -50,14 +46,10 @@ fun getServiceConfig(context: Context): ServiceConfig? {
     return sharedPrefs.let {
         if (it.contains("detectionIntervalSec") &&
             it.contains("tiltAngleThreshold") &&
-            it.contains("samplingDurationMs") &&
-            it.contains("engineNoiseThreshold") &&
             it.contains("notificationServerIp")) {
             ServiceConfig(
                 it.getInt("detectionIntervalSec", 0),
                 it.getFloat("tiltAngleThreshold", 0f),
-                it.getInt("samplingDurationMs", 0),
-                it.getFloat("engineNoiseThreshold", 0f),
                 it.getString("notificationServerIp", "")
             )
         } else {
