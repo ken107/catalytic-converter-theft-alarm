@@ -10,8 +10,7 @@ enum class ServiceState {
 
 data class ServiceConfig (
     val detectionIntervalSec: Int,
-    val tiltAngleThreshold: Float,
-    val notificationServerIp: String
+    val tiltAngleThreshold: Float
 )
 
 private const val name = "SPYSERVICE_KEY"
@@ -36,7 +35,6 @@ fun setServiceConfig(context: Context, config: ServiceConfig) {
     sharedPrefs.edit().let {
         it.putInt("detectionIntervalSec", config.detectionIntervalSec)
         it.putFloat("tiltAngleThreshold", config.tiltAngleThreshold)
-        it.putString("notificationServerIp", config.notificationServerIp)
         it.apply()
     }
 }
@@ -45,12 +43,10 @@ fun getServiceConfig(context: Context): ServiceConfig? {
     val sharedPrefs = getPreferences(context)
     return sharedPrefs.let {
         if (it.contains("detectionIntervalSec") &&
-            it.contains("tiltAngleThreshold") &&
-            it.contains("notificationServerIp")) {
+            it.contains("tiltAngleThreshold")) {
             ServiceConfig(
                 it.getInt("detectionIntervalSec", 0),
-                it.getFloat("tiltAngleThreshold", 0f),
-                it.getString("notificationServerIp", "")
+                it.getFloat("tiltAngleThreshold", 0f)
             )
         } else {
             null

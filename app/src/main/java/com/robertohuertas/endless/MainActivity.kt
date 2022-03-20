@@ -23,10 +23,6 @@ class MainActivity : AppCompatActivity() {
         findViewById<EditText>(R.id.editTiltAngleThreshold)
     }
 
-    private val editNotificationServerIp by lazy {
-        findViewById<EditText>(R.id.editNotificationServerIp)
-    }
-
     private val mLog by lazy {
         findViewById<TextView>(R.id.txtLog)
             .also { it.movementMethod = ScrollingMovementMethod() }
@@ -59,15 +55,13 @@ class MainActivity : AppCompatActivity() {
             it.setOnClickListener {
                 log("START THE FOREGROUND SERVICE ON DEMAND")
                 if (editDetectionIntervalSec.text.isBlank() ||
-                    editTiltAngleThreshold.text.isBlank() ||
-                    editNotificationServerIp.text.isBlank()) {
+                    editTiltAngleThreshold.text.isBlank()) {
                     mLog.append("Error: Missing params\n")
                 }
                 else {
                     setServiceConfig(this, ServiceConfig(
                         editDetectionIntervalSec.text.toString().toInt(),
-                        editTiltAngleThreshold.text.toString().toFloat(),
-                        editNotificationServerIp.text.toString()
+                        editTiltAngleThreshold.text.toString().toFloat()
                     ))
                     actionOnService(Actions.START)
                 }
@@ -84,7 +78,6 @@ class MainActivity : AppCompatActivity() {
         getServiceConfig(this)?.also {
             editDetectionIntervalSec.setText(it.detectionIntervalSec.toString())
             editTiltAngleThreshold.setText(it.tiltAngleThreshold.toString())
-            editNotificationServerIp.setText(it.notificationServerIp)
         }
     }
 

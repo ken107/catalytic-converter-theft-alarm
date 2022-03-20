@@ -1,8 +1,24 @@
 package com.robertohuertas.endless
 
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import kotlin.experimental.xor
 
 class KasaClient {
+
+    fun setAlarm(on: Boolean) {
+        val payload = encrypt("{\"system\":{\"set_relay_state\":{\"state\":${if (on) 1 else 0}}}}")
+        DatagramSocket().use {
+            it.broadcast = true
+            it.send(DatagramPacket(
+                payload,
+                payload.size,
+                InetAddress.getByName("255.255.255.255"),
+                9999
+            ))
+        }
+    }
 
     private fun encrypt(input: String): ByteArray {
         val buf = input.toByteArray(Charsets.UTF_8)

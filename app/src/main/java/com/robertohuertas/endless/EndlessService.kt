@@ -23,6 +23,8 @@ class EndlessService : Service() {
     private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
     private val batteryManager by lazy { getSystemService(Context.BATTERY_SERVICE) as BatteryManager }
     private var gravityRef: FloatArray? = null
+    private val kasa by lazy { KasaClient() }
+    private var alarmOnSince: Long? = null
 
     override fun onBind(intent: Intent): IBinder? {
         log("Some component want to bind with the service")
@@ -83,10 +85,9 @@ class EndlessService : Service() {
         Toast.makeText(this, "Service starting its task", Toast.LENGTH_SHORT).show()
         isServiceStarted = true
         setServiceState(this, ServiceState.STARTED)
-        logStatus(String.format("Service started (%d, %.1f, %s)",
+        logStatus(String.format("Service started (%d, %.1f)",
             config.detectionIntervalSec,
-            config.tiltAngleThreshold,
-            config.notificationServerIp
+            config.tiltAngleThreshold
         ))
 
         // we need this lock so our service gets not affected by Doze Mode
@@ -127,13 +128,22 @@ class EndlessService : Service() {
     }
 
     private suspend fun detection(config: ServiceConfig) {
+        if (isEngineOn()) {
+            logStatus("Engine running")
+            gravityRef = null
+            if (alarmOnSince != null) {
+                logStatus("Alarm OFF")
+                kasa.setAlarm(false)
+                alarmOnSince = null
+            }
+        }
+        else {
             val firstSample = readAccelerometer(sensorManager)
             if (gravityRef == null) {
                 logStatus(String.format("u=%s",
                     printVect(firstSample)
                 ))
-                if (!isEngineOn()) gravityRef = firstSample
-                else logStatus("Engine running")
+                gravityRef = firstSample
             }
             else {
                 val tiltAngle = angleBetweenVectors(gravityRef!!, firstSample)
@@ -143,11 +153,28 @@ class EndlessService : Service() {
                     tiltAngle
                 ))
                 if (tiltAngle >= config.tiltAngleThreshold) {
-                    if (!isEngineOn()) raiseAlarm()
-                    else logStatus("Engine running")
-                    gravityRef = null
+                    if (alarmOnSince == null) {
+                        logStatus("Alarm ON")
+                        kasa.setAlarm(true)
+                        alarmOnSince = System.currentTimeMillis()
+                    }
+                    else if (System.currentTimeMillis()-(alarmOnSince ?: 0L) > 2*60*1000L) {
+                        logStatus("Alarm OFF")
+                        kasa.setAlarm(false)
+                        alarmOnSince = null
+                        //reset
+                        gravityRef = null
+                    }
+                }
+                else {
+                    if (alarmOnSince != null) {
+                        logStatus("Alarm OFF")
+                        kasa.setAlarm(false)
+                        alarmOnSince = null
+                    }
                 }
             }
+        }
     }
 
     private fun isEngineOn(): Boolean {
@@ -167,10 +194,6 @@ class EndlessService : Service() {
         val cosThetaSq = dotProd*dotProd / (uMagSq*vMagSq)
         val cosTheta = sqrt(cosThetaSq).withSign(dotProd)
         return acos(cosTheta) * 180f / PI.toFloat()
-    }
-
-    private fun raiseAlarm() {
-        logStatus("THEFT DETECTED")
     }
 
     private fun logStatus(message: String) {
