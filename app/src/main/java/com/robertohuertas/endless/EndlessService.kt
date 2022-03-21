@@ -8,7 +8,9 @@ import android.graphics.Color
 import android.hardware.SensorManager
 import android.os.*
 import android.widget.Toast
-import kotlinx.coroutines.*
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.*
 import kotlin.math.PI
 import kotlin.math.acos
@@ -21,9 +23,9 @@ class EndlessService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var isServiceStarted = false
     private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
-    private val batteryManager by lazy { getSystemService(Context.BATTERY_SERVICE) as BatteryManager }
+    private val wifi by lazy { Wifi(this, this::logStatus) }
+    private val kasaClient by lazy { KasaClient() }
     private var gravityRef: FloatArray? = null
-    private val kasa by lazy { KasaClient() }
     private var alarmOnSince: Long? = null
 
     override fun onBind(intent: Intent): IBinder? {
@@ -101,7 +103,11 @@ class EndlessService : Service() {
         // we're starting a loop in a coroutine
         GlobalScope.launch {
             while (isServiceStarted) {
-                detection(config)
+                try {
+                    detection(config)
+                } catch (e: Exception) {
+                    logStatus(e.message ?: "Exception!")
+                }
                 delay(config.detectionIntervalSec*1000L)
             }
             log("End of the loop for the service")
@@ -132,8 +138,7 @@ class EndlessService : Service() {
             logStatus("Engine running")
             gravityRef = null
             if (alarmOnSince != null) {
-                logStatus("Alarm OFF")
-                kasa.setAlarm(false)
+                clearAlarm()
                 alarmOnSince = null
             }
         }
@@ -154,27 +159,35 @@ class EndlessService : Service() {
                 ))
                 if (tiltAngle >= config.tiltAngleThreshold) {
                     if (alarmOnSince == null) {
-                        logStatus("Alarm ON")
-                        kasa.setAlarm(true)
+                        setAlarm()
                         alarmOnSince = System.currentTimeMillis()
                     }
                     else if (System.currentTimeMillis()-(alarmOnSince ?: 0L) > 2*60*1000L) {
-                        logStatus("Alarm OFF")
-                        kasa.setAlarm(false)
+                        clearAlarm()
                         alarmOnSince = null
-                        //reset
                         gravityRef = null
                     }
                 }
                 else {
                     if (alarmOnSince != null) {
-                        logStatus("Alarm OFF")
-                        kasa.setAlarm(false)
+                        clearAlarm()
                         alarmOnSince = null
                     }
                 }
             }
         }
+    }
+
+    private suspend fun setAlarm() {
+        logStatus("Alarm ON")
+        wifi.turnOn()
+        kasaClient.setAlarm(true)
+    }
+
+    private suspend fun clearAlarm() {
+        logStatus("Alarm OFF")
+        kasaClient.setAlarm(false)
+        wifi.turnOff()
     }
 
     private fun isEngineOn(): Boolean {
