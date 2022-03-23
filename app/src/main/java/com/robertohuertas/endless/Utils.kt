@@ -1,5 +1,7 @@
 package com.robertohuertas.endless
 
+import android.content.Context
+import android.content.Intent
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -7,8 +9,12 @@ import android.hardware.SensorManager
 import android.util.Log
 import kotlinx.coroutines.channels.Channel
 
-fun log(msg: String) {
+fun log(context: Context, msg: String) {
     Log.d("ENDLESS-SERVICE", msg)
+    context.sendBroadcast(
+        Intent("com.robertohuertas.endless.LogStatus")
+            .putExtra("message", msg)
+    )
 }
 
 suspend fun readAccelerometer(sensorManager: SensorManager): FloatArray {

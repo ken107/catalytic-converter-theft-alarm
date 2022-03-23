@@ -6,103 +6,83 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
 import android.hardware.SensorManager
-import android.os.*
-import android.widget.Toast
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import java.util.*
+import android.os.BatteryManager
+import android.os.PowerManager
+import kotlinx.coroutines.*
+import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import kotlin.math.PI
 import kotlin.math.acos
 import kotlin.math.sqrt
 import kotlin.math.withSign
 
-
 class EndlessService : Service() {
 
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var isServiceStarted = false
+    private val wakeLock by lazy {
+        powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EndlessService::lock")
+    }
+    private var serviceExpire: Instant? = null
     private val sensorManager by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager }
+    private val powerManager by lazy { getSystemService(Context.POWER_SERVICE) as PowerManager }
+    private val notificationManager by lazy { getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager }
     private val wifi by lazy { Wifi(this, this::logStatus) }
     private val kasaClient by lazy { KasaClient() }
     private var gravityRef: FloatArray? = null
     private var alarmOnSince: Long? = null
 
-    override fun onBind(intent: Intent): IBinder? {
-        log("Some component want to bind with the service")
-        // We don't provide binding, so return null
-        return null
-    }
+    private fun isServiceActive() = serviceExpire?.isAfter(Instant.now()) == true
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        log("onStartCommand executed with startId: $startId")
-        if (intent != null) {
-            val action = intent.action
-            log("using an intent with action $action")
-            when (action) {
-                Actions.START.name -> startService()
-                Actions.STOP.name -> stopService()
-                else -> log("This should never happen. No action in the received intent")
-            }
-        } else {
-            log(
-                "with a null intent. It has been probably restarted by the system."
-            )
+    override fun onBind(intent: Intent) = null
+
+    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+        when (intent.action) {
+            Actions.START.name -> startService(intent.getIntExtra("workDurationSec", 0))
+            Actions.STOP.name -> stopService()
+            else -> logStatus("Unhandled action '${intent.action}'")
         }
-        // by returning this we make sure the service is restarted if the system kills the service
         return START_STICKY
     }
 
     override fun onCreate() {
         super.onCreate()
-        log("The service has been created".toUpperCase(Locale.ROOT))
-        val notification = createNotification()
-        startForeground(1, notification)
+        startForeground(1, createNotification())
+        logStatus("The service has been created")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        log("The service has been destroyed".toUpperCase(Locale.ROOT))
-        Toast.makeText(this, "Service destroyed", Toast.LENGTH_SHORT).show()
+        logStatus("The service has been destroyed")
     }
 
-    override fun onTaskRemoved(rootIntent: Intent) {
-        val restartServiceIntent = Intent(applicationContext, EndlessService::class.java).also {
-            it.setPackage(packageName)
+    private fun startService(intentWorkDurationSec: Int) {
+        // schedule next service
+        scheduleService(this)
+
+        if (isServiceActive()) return
+        val config = getServiceConfig(this) ?: return run {
+            logStatus("Error: Can't start service, missing config")
         }
-        val restartServicePendingIntent: PendingIntent = PendingIntent.getService(this, 1, restartServiceIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
-        applicationContext.getSystemService(Context.ALARM_SERVICE)
-        val alarmService: AlarmManager = applicationContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmService.set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 1000, restartServicePendingIntent)
-    }
-    
-    private fun startService() {
-        if (isServiceStarted) return
-        val config = getServiceConfig(this)
-        if (config == null) {
-            logStatus("Error: Missing service config")
-            return
+        val workDurationSec = when (intentWorkDurationSec) {
+            0 -> config.workDurationSec
+            else -> intentWorkDurationSec
         }
-        log("Starting the foreground service task")
-        Toast.makeText(this, "Service starting its task", Toast.LENGTH_SHORT).show()
-        isServiceStarted = true
-        setServiceState(this, ServiceState.STARTED)
-        logStatus(String.format("Service started (%d, %.1f)",
+        serviceExpire = Instant.now().plus(workDurationSec.toLong(), ChronoUnit.SECONDS)
+
+        logStatus(String.format("Starting service (%s, %d, %d, %.1f)",
+            ZonedDateTime.now().withNano(0).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+            workDurationSec,
             config.detectionIntervalSec,
             config.tiltAngleThreshold
         ))
 
         // we need this lock so our service gets not affected by Doze Mode
-        wakeLock =
-            (getSystemService(Context.POWER_SERVICE) as PowerManager).run {
-                newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EndlessService::lock").apply {
-                    acquire()
-                }
-            }
+        wakeLock.acquire(workDurationSec * 1000L)
 
         // we're starting a loop in a coroutine
         GlobalScope.launch {
-            while (isServiceStarted) {
+            while (isServiceActive()) {
                 try {
                     detection(config)
                 } catch (e: Exception) {
@@ -110,27 +90,19 @@ class EndlessService : Service() {
                 }
                 delay(config.detectionIntervalSec*1000L)
             }
-            log("End of the loop for the service")
+            logStatus("End of the loop for the service")
+
+            withContext(Dispatchers.Main) {
+                wakeLock.release()
+                stopForeground(true)
+                stopSelf()
+            }
         }
     }
 
     private fun stopService() {
-        log("Stopping the foreground service")
-        Toast.makeText(this, "Service stopping", Toast.LENGTH_SHORT).show()
-        try {
-            wakeLock?.let {
-                if (it.isHeld) {
-                    it.release()
-                }
-            }
-            stopForeground(true)
-            stopSelf()
-        } catch (e: Exception) {
-            log("Service stopped without being started: ${e.message}")
-        }
-        isServiceStarted = false
-        setServiceState(this, ServiceState.STOPPED)
-        logStatus("Service stopped")
+        logStatus("Stopping service")
+        serviceExpire = null
     }
 
     private suspend fun detection(config: ServiceConfig) {
@@ -209,22 +181,12 @@ class EndlessService : Service() {
         return acos(cosTheta) * 180f / PI.toFloat()
     }
 
-    private fun logStatus(message: String) {
-        Intent("com.robertohuertas.endless.LogStatus").let {
-            it.putExtra("message", message)
-            sendBroadcast(it)
-        }
-    }
+    private fun logStatus(message: String) = log(this, message)
 
     private fun printVect(v: FloatArray) = String.format("[%.2f,%.2f,%.2f]", v[0], v[1], v[2])
 
     private fun createNotification(): Notification {
         val notificationChannelId = "ENDLESS SERVICE CHANNEL"
-
-        // depending on the Android API that we're dealing with we will have
-        // to use a specific method to create the notification
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val channel = NotificationChannel(
                 notificationChannelId,
                 "Endless Service notifications channel",
@@ -238,24 +200,17 @@ class EndlessService : Service() {
                 it
             }
             notificationManager.createNotificationChannel(channel)
-        }
 
         val pendingIntent: PendingIntent = Intent(this, MainActivity::class.java).let { notificationIntent ->
             PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE)
         }
 
-        val builder: Notification.Builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(
-            this,
-            notificationChannelId
-        ) else Notification.Builder(this)
-
-        return builder
+        return Notification.Builder(this, notificationChannelId)
             .setContentTitle("Endless Service")
             .setContentText("This is your favorite endless service working")
             .setContentIntent(pendingIntent)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setTicker("Ticker text")
-            .setPriority(Notification.PRIORITY_HIGH) // for under android 26 compatibility
             .build()
     }
 }

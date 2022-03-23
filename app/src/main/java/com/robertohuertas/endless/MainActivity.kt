@@ -4,14 +4,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.Build
 import android.os.Bundle
 import android.support.v7.app.AppCompatActivity
 import android.text.method.ScrollingMovementMethod
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
-import kotlinx.coroutines.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,13 +26,7 @@ class MainActivity : AppCompatActivity() {
             .also { it.movementMethod = ScrollingMovementMethod() }
     }
 
-    private lateinit var scope: CoroutineScope
-
-    private val broadcastFilter by lazy {
-        IntentFilter("com.robertohuertas.endless.LogStatus")
-    }
-
-    private val broadcastReceiver by lazy {
+    private val logReceiver by lazy {
         object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 intent.getCharSequenceExtra("message").also {
@@ -53,25 +45,26 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnStartService).let {
             it.setOnClickListener {
-                log("START THE FOREGROUND SERVICE ON DEMAND")
-                if (editDetectionIntervalSec.text.isBlank() ||
-                    editTiltAngleThreshold.text.isBlank()) {
-                    mLog.append("Error: Missing params\n")
-                }
-                else {
-                    setServiceConfig(this, ServiceConfig(
-                        editDetectionIntervalSec.text.toString().toInt(),
-                        editTiltAngleThreshold.text.toString().toFloat()
-                    ))
-                    actionOnService(Actions.START)
+                if (isConfigValid()) {
+                    saveConfig()
+                    mLog.append("Service will run for 10 minutes for testing, after that it will run regularly from midnight to 6:00am\n")
+                    startForegroundService(
+                        Intent(this, EndlessService::class.java)
+                            .setAction(Actions.START.name)
+                            .putExtra("workDurationSec", 10*60)
+                    )
+                } else {
+                    mLog.append("Error: Missing args\n")
                 }
             }
         }
 
         findViewById<Button>(R.id.btnStopService).let {
             it.setOnClickListener {
-                log("STOP THE FOREGROUND SERVICE ON DEMAND")
-                actionOnService(Actions.STOP)
+                startForegroundService(
+                    Intent(this, EndlessService::class.java)
+                        .setAction(Actions.STOP.name)
+                )
             }
         }
 
@@ -81,29 +74,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun actionOnService(action: Actions) {
-        if (getServiceState(this) == ServiceState.STOPPED && action == Actions.STOP) return
-        Intent(this, EndlessService::class.java).also {
-            it.action = action.name
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                log("Starting the service in >=26 Mode")
-                startForegroundService(it)
-                return
-            }
-            log("Starting the service in < 26 Mode")
-            startService(it)
-        }
+    private fun isConfigValid() = editDetectionIntervalSec.text.isNotBlank() &&
+            editTiltAngleThreshold.text.isNotBlank()
+
+    private fun saveConfig() {
+        val config = ServiceConfig(
+            0,
+            6*3600,
+            editDetectionIntervalSec.text.toString().toInt(),
+            editTiltAngleThreshold.text.toString().toFloat()
+        )
+        setServiceConfig(this, config)
+        mLog.append("Config saved\n")
     }
 
     override fun onStart() {
         super.onStart()
-        registerReceiver(broadcastReceiver, broadcastFilter)
-        scope = MainScope()
+        registerReceiver(logReceiver, IntentFilter("com.robertohuertas.endless.LogStatus"))
     }
 
     override fun onStop() {
-        scope.cancel()
-        unregisterReceiver(broadcastReceiver)
+        unregisterReceiver(logReceiver)
         super.onStop()
     }
 }
