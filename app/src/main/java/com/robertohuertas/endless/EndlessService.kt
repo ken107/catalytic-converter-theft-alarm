@@ -42,7 +42,7 @@ class EndlessService : Service() {
             Actions.STOP.name -> stopService()
             else -> logStatus("Unhandled action '${intent.action}'")
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onCreate() {
